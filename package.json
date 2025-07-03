@@ -4,17 +4,17 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts" // For local development with hot reloading
+    "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.x", // Use latest version
-    "zod": "^3.x", // Use latest version for schema validation
-    "node-telegram-bot-api": "^0.61.0", // Or latest version
-    "dotenv": "^16.x", // For environment variables (API keys, etc.)
-    "@google/generative-ai": "^0.x", // Google Gemini API SDK
-    "net": "^1.0.2" // Node.js built-in TCP module, explicitly listed for clarity
+    "@modelcontextprotocol/sdk": "^1.x",
+    "zod": "^3.x",
+    "node-telegram-bot-api": "^0.61.0",
+    "dotenv": "^16.x",
+    "@google/generative-ai": "^0.x",
+    "net": "^1.0.2"
   },
   "devDependencies": {
-    "tsx": "^4.x" // For running TypeScript directly
+    "tsx": "^4.x"
   }
 }
