@@ -1,0 +1,4 @@
+TELEGRAM_BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN"
+TELEGRAM_WEBHOOK_URL="https://your-vercel-or-render-app.vercel.app" # Or your public Render URL
+GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
+TCP_PORT="8080"
