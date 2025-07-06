@@ -1,11 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Telegraf } from "telegraf"; // A popular wrapper for node-telegram-bot-api
-import { NetServerTransport } from './NetServerTransport.js'; // Custom TCP Transport for MCP
+import { Telegraf } from "telegraf";
+import { NetServerTransport } from './NetServerTransport.js';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from 'dotenv';
+import express from 'express'; // Import Express
 
-dotenv.config(); // Load environment variables
+dotenv.config();
 
 // --- MCP Server Setup ---
 const mcpServer = new McpServer({
@@ -16,22 +17,20 @@ const mcpServer = new McpServer({
 
 // --- Telegram Bot Setup ---
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_WEBHOOK_URL = process.env.TELEGRAM_WEBHOOK_URL; // e.g., your Vercel/Render URL + /webhook
 const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
 
 // --- Google Gemini API Setup ---
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-const geminiModel = genAI.getGenerativeModel({ model: "gemini-pro" }); // Or "gemini-1.5-pro-latest" for higher context/multimodal
+const geminiModel = genAI.getGenerativeModel({ model: "gemini-pro" });
 
-// --- Global State for Chat ID Mapping ---
-// In a real production app, use a persistent store (Redis, lightweight DB)
-// For prototype, a Map is fine, but remember it resets on server restart.
-const activeChats = new Map<string, string>(); // Maps userId/chatId to phoneId (if conversation is ongoing with a specific phone)
+// --- Global State for Chat ID Mapping (Consider persistent storage for production) ---
+const activeChats = new Map<string, string>(); // Maps userId to chatId
 
 // --- MCP Tools for Phone Communication ---
 
 // Tool for the Node.js agent to receive messages from Telegram and forward to phones
+// This tool will be called by the HTTP webhook handler
 mcpServer.tool(
   'receive_telegram_message',
   'Receive an incoming message from Telegram, used by the Node.js agent to forward to a specific phone or process.',
@@ -42,24 +41,25 @@ mcpServer.tool(
   },
   async ({ chat_id, user_id, text }) => {
     console.log(`[MCP Tool: receive_telegram_message] Received from Telegram: Chat ID ${chat_id}, User ID ${user_id}, Text: "${text}"`);
-    // This is where the pre-pre-orchestration logic decides which phone to send to.
-    // For now, let's assume it sends to a "default" phone or intelligently routes.
-    // In a real swarm, you'd query a registry of phones and their capabilities.
 
-    // Store chat_id temporarily for later response
-    activeChats.set(user_id, chat_id); // Using user_id as key for simplicity
+    activeChats.set(user_id, chat_id); // Store chat_id for later response
 
-    // Simulate sending to a phone via TCP (your NetServerTransport needs to implement client sending)
-    // In a real scenario, this would involve a client connection to the specific phone
-    // For this server, we're building the _server_ part of the TCP connection,
-    // so this 'send to phone' part is conceptual for now until the phone connects.
-    console.log(`[Server] Forwarding message to phone swarm for processing.`);
-    // You'd have a mechanism here to send this data via TCP to the React Native app.
-    // Example: `phoneClient.send(JSON.stringify({ type: 'telegram_input', chat_id, user_id, text }));`
-    
-    // Respond to MCP client (e.g., the local Node.js agent) that it was received.
+    // This is where you'd select which phone to send the message to.
+    // For now, let's just log and prepare the message to be sent to *any* connected phone.
+    const messageForPhone = {
+        type: 'telegram_input', // Custom type for your phone's TCP listener
+        chat_id,
+        user_id,
+        text
+    };
+
+    // Assuming NetServerTransport has a way to send to a specific client,
+    // or just broadcast to all connected clients for a prototype.
+    // We'll add a `sendToAllPhones` or `sendToPhone` method to NetServerTransport.
+    (mcpServer.transport as NetServerTransport).sendToAllPhones(messageForPhone); // Cast to access custom method
+
     return {
-      content: [{ type: "text", text: `Message for chat ${chat_id} received and queued for phone processing.` }]
+      content: [{ type: "text", text: `Message for chat ${chat_id} received and forwarded to phone swarm.` }]
     };
   }
 );
@@ -110,73 +110,68 @@ mcpServer.tool(
 
 // --- Set up Communication Transports ---
 
-// For local testing with MCP Inspector (or if another CLI/tool is an MCP client)
-// const stdioTransport = new StdioServerTransport();
-// mcpServer.connect(stdioTransport);
-
-// For TCP communication with your phones
+// TCP communication with your phones
 const tcpPort = parseInt(process.env.TCP_PORT || '8080'); // Port for phone communication
-const netServerTransport = new NetServerTransport(tcpPort, mcpServer); // Custom transport
+const netServerTransport = new NetServerTransport(tcpPort, mcpServer);
 mcpServer.connect(netServerTransport); // Connect MCP server to this transport
 
-// --- Telegram Webhook Setup ---
-bot.start(async (ctx) => {
-    const userId = ctx.from.id.toString();
-    const chatId = ctx.chat.id.toString();
-    console.log(`[Telegram] Bot started by User ID: ${userId}, Chat ID: ${chatId}`);
-    // Simulate initial message reception via MCP tool for consistent flow
-    // In a real setup, your bot.on('message') handler would do this
-    await mcpServer.callTool('receive_telegram_message', { chat_id: chatId, user_id: userId, text: "Hello! AI Swarm is online." });
-    ctx.reply('Hello! I am your AI Swarm gateway. How can I help you?');
+// --- Express.js for HTTP Webhook ---
+const app = express();
+app.use(express.json()); // Middleware to parse JSON request bodies
+
+// Render provides a PORT environment variable for HTTP traffic
+const httpPort = parseInt(process.env.PORT || '3000');
+const WEBHOOK_PATH = `/telegram-webhook`; // Consistent webhook path
+
+// Telegram webhook endpoint
+app.post(WEBHOOK_PATH, async (req, res) => {
+    // Telegraf's webhookCallback handles the update processing and sends a 200 OK
+    // This is crucial for Telegram to not retry
+    bot.webhookCallback(WEBHOOK_PATH)(req, res);
+
+    // After Telegraf handles it, we can extract the message and call our internal MCP tool
+    // We parse it ourselves as bot.webhookCallback doesn't return the processed update
+    const update = req.body;
+    if (update && update.message) {
+        const userId = update.message.from.id.toString();
+        const chatId = update.message.chat.id.toString();
+        const messageText = update.message.text || update.message.caption;
+
+        if (messageText) {
+            console.log(`[HTTP Webhook] Received Telegram message from chat ${chatId}: "${messageText}"`);
+            try {
+                // Call the MCP tool to process the incoming Telegram message
+                await mcpServer.callTool('receive_telegram_message', {
+                    chat_id: chatId,
+                    user_id: userId,
+                    text: messageText
+                });
+                console.log(`[HTTP Webhook] 'receive_telegram_message' tool called successfully.`);
+            } catch (error) {
+                console.error(`[HTTP Webhook] Error calling 'receive_telegram_message' MCP tool:`, error);
+                // Even if internal error, still send 200 OK to Telegram to avoid retries
+            }
+        } else {
+            console.log(`[HTTP Webhook] Received non-text message type, ignoring for now.`);
+        }
+    } else {
+        console.log(`[HTTP Webhook] Received Telegram update without message content.`);
+    }
 });
 
-bot.on('message', async (ctx) => {
-    const userId = ctx.from.id.toString();
-    const chatId = ctx.chat.id.toString();
-    const messageText = (ctx.message as any).text || (ctx.message as any).caption; // Handle text or image caption
-    
-    if (!messageText) {
-        ctx.reply("Sorry, I can only process text messages for now.");
-        return;
-    }
+// Start the Express HTTP server
+app.listen(httpPort, () => {
+    console.log(`[HTTP Server] Listening for webhooks on port ${httpPort} at path ${WEBHOOK_PATH}`);
+    // Set the Telegram webhook to *this* server's public URL
+    const publicRenderUrl = process.env.RENDER_EXTERNAL_HOSTNAME ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://localhost:${httpPort}`;
+    const webhookUrl = `${publicRenderUrl}${WEBHOOK_PATH}`;
 
-    console.log(`[Telegram] Message from User ID: ${userId}, Chat ID: ${chatId}, Text: "${messageText}"`);
-
-    // Here, the Node.js agent acts as a pre-pre-orchestrator.
-    // It calls the `receive_telegram_message` MCP tool defined above.
-    // This makes the flow uniform: external input -> MCP tool -> internal processing.
-    try {
-        const mcpResponse = await mcpServer.callTool('receive_telegram_message', { chat_id: chatId, user_id: userId, text: messageText });
-        // The mcpResponse content could be used for immediate feedback to Telegram if needed.
-        // For now, assume the phone will handle the actual response via send_telegram_message.
-        console.log(`[Telegram Handler] 'receive_telegram_message' tool called successfully.`);
-    } catch (error) {
-        console.error(`[Telegram Handler] Error calling 'receive_telegram_message' MCP tool:`, error);
-        ctx.reply("An error occurred while processing your request. Please try again.");
-    }
+    bot.telegram.setWebhook(webhookUrl).then(() => {
+        console.log(`[Telegram] Webhook set to ${webhookUrl}`);
+    }).catch(e => console.error("[Telegram] Error setting webhook:", e));
 });
 
-// Set up webhook (for Vercel/Render)
-if (TELEGRAM_WEBHOOK_URL) {
-    bot.telegram.setWebhook(TELEGRAM_WEBHOOK_URL + '/secret-path-for-webhook').then(() => {
-        console.log(`[Telegram] Webhook set to ${TELEGRAM_WEBHOOK_URL}/secret-path-for-webhook`);
-    }).catch(e => console.error("Error setting webhook:", e));
+process.once('SIGINT', () => { bot.stop('SIGINT'); console.log('Shutting down...'); });
+process.once('SIGTERM', () => { bot.stop('SIGTERM'); console.log('Shutting down...'); });
 
-    // Handle webhook requests
-    // This depends on your web server setup (e.g., Express.js if you add it)
-    // For Telegraf with a serverless function, it's often handled implicitly
-    // Example for a simple Express server:
-    // const express = require('express');
-    // const app = express();
-    // app.use(bot.webhookCallback('/secret-path-for-webhook'));
-    // app.listen(process.env.PORT || 3000, () => console.log('Webhook server running'));
-} else {
-    // Fallback for local development if no webhook URL is set (uses long polling)
-    bot.launch();
-    console.log("[Telegram] Bot polling started (no webhook URL configured).");
-}
-
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
-console.log(`[Server] AI Swarm Gateway server started. Listening for Telegram messages.`);
+console.log(`[Server] AI Swarm Gateway server started. Listening for TCP connections on port ${tcpPort} and HTTP on ${httpPort}.`);
