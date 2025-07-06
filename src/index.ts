@@ -4,7 +4,7 @@ import { Telegraf } from "telegraf";
 import { NetServerTransport } from './NetServerTransport.js';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from 'dotenv';
-import express from 'express'; // Import Express
+import express from 'express';
 
 dotenv.config();
 
@@ -24,39 +24,32 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const geminiModel = genAI.getGenerativeModel({ model: "gemini-pro" });
 
-// --- Global State for Chat ID Mapping (Consider persistent storage for production) ---
-const activeChats = new Map<string, string>(); // Maps userId to chatId
+// --- Global State for Chat ID Mapping ---
+const activeChats = new Map<string, string>();
 
-// --- MCP Tools for Phone Communication ---
+// --- MCP Tools ---
 
-// Tool for the Node.js agent to receive messages from Telegram and forward to phones
-// This tool will be called by the HTTP webhook handler
+// Tool to receive Telegram messages and forward to phones
 mcpServer.tool(
   'receive_telegram_message',
-  'Receive an incoming message from Telegram, used by the Node.js agent to forward to a specific phone or process.',
+  'Receive an incoming message from Telegram, forward to phones.',
   {
-    chat_id: z.string().describe("The Telegram chat ID for the conversation."),
-    user_id: z.string().describe("The Telegram user ID of the sender."),
-    text: z.string().describe("The text content of the Telegram message.")
+    chat_id: z.string().describe("Telegram chat ID"),
+    user_id: z.string().describe("Telegram user ID"),
+    text: z.string().describe("Message text")
   },
   async ({ chat_id, user_id, text }) => {
-    console.log(`[MCP Tool: receive_telegram_message] Received from Telegram: Chat ID ${chat_id}, User ID ${user_id}, Text: "${text}"`);
+    console.log(`[MCP Tool: receive_telegram_message] From Telegram: Chat ID ${chat_id}, User ID ${user_id}, Text: "${text}"`);
+    activeChats.set(user_id, chat_id);
 
-    activeChats.set(user_id, chat_id); // Store chat_id for later response
-
-    // This is where you'd select which phone to send the message to.
-    // For now, let's just log and prepare the message to be sent to *any* connected phone.
     const messageForPhone = {
-        type: 'telegram_input', // Custom type for your phone's TCP listener
-        chat_id,
-        user_id,
-        text
+      type: 'telegram_input',
+      chat_id,
+      user_id,
+      text
     };
 
-    // Assuming NetServerTransport has a way to send to a specific client,
-    // or just broadcast to all connected clients for a prototype.
-    // We'll add a `sendToAllPhones` or `sendToPhone` method to NetServerTransport.
-    (mcpServer.transport as NetServerTransport).sendToAllPhones(messageForPhone); // Cast to access custom method
+    (mcpServer.transport as NetServerTransport).sendToAllPhones(messageForPhone);
 
     return {
       content: [{ type: "text", text: `Message for chat ${chat_id} received and forwarded to phone swarm.` }]
@@ -67,10 +60,10 @@ mcpServer.tool(
 // Tool for phones to send messages back to Telegram
 mcpServer.tool(
   'send_telegram_message',
-  'Send a message back to a Telegram chat.',
+  'Send a message to a Telegram chat.',
   {
-    chat_id: z.string().describe("The Telegram chat ID to send the message to."),
-    text: z.string().describe("The text message to send to Telegram.")
+    chat_id: z.string().describe("Telegram chat ID"),
+    text: z.string().describe("Message text")
   },
   async ({ chat_id, text }) => {
     try {
@@ -84,94 +77,91 @@ mcpServer.tool(
   }
 );
 
-// --- Optional: MCP Tool for Gemini API (if server-side Gemini is used) ---
+// Tool for Google Gemini API chat
 mcpServer.tool(
-    'gemini_chat',
-    'Engage Google Gemini for advanced text generation or specific queries.',
-    {
-        prompt: z.string().describe("The prompt for the Gemini model."),
-        model_name: z.string().optional().describe("Optional: Specific Gemini model to use (e.g., gemini-pro, gemini-1.5-pro-latest). Defaults to gemini-pro if not specified."),
-        system_instruction: z.string().optional().describe("Optional: System instruction for Gemini."),
-    },
-    async ({ prompt, model_name, system_instruction }) => {
-        try {
-            const currentModel = model_name ? genAI.getGenerativeModel({ model: model_name }) : geminiModel;
-            const result = await currentModel.generateContent(prompt);
-            const response = result.response;
-            const text = response.text();
-            console.log(`[MCP Tool: gemini_chat] Gemini response: "${text.substring(0, 50)}..."`);
-            return { content: [{ type: "text", text: text }] };
-        } catch (error) {
-            console.error(`[MCP Tool: gemini_chat] Error calling Gemini API:`, error);
-            return { content: [{ type: "text", text: `Error from Gemini: ${error.message}` }] };
-        }
+  'gemini_chat',
+  'Engage Google Gemini for text generation.',
+  {
+    prompt: z.string().describe("Prompt for Gemini"),
+    model_name: z.string().optional().describe("Optional Gemini model name"),
+    system_instruction: z.string().optional().describe("Optional system instruction")
+  },
+  async ({ prompt, model_name }) => {
+    try {
+      const currentModel = model_name ? genAI.getGenerativeModel({ model: model_name }) : geminiModel;
+      const result = await currentModel.generateContent(prompt);
+      const text = result.response.text();
+      console.log(`[MCP Tool: gemini_chat] Gemini response: "${text.substring(0, 50)}..."`);
+      return { content: [{ type: "text", text }] };
+    } catch (error) {
+      console.error(`[MCP Tool: gemini_chat] Error calling Gemini API:`, error);
+      return { content: [{ type: "text", text: `Error from Gemini: ${error.message}` }] };
     }
+  }
 );
+
+// --- Telegram Bot Handlers ---
+
+// Register message handler BEFORE webhook processing
+bot.on('message', async (ctx) => {
+  const userId = ctx.from.id.toString();
+  const chatId = ctx.chat.id.toString();
+  const messageText = ctx.message['text'] || ctx.message['caption'];
+
+  if (messageText) {
+    console.log(`[Telegram Bot] Received message from chat ${chatId}: "${messageText}"`);
+    try {
+      await mcpServer.callTool('receive_telegram_message', {
+        chat_id: chatId,
+        user_id: userId,
+        text: messageText
+      });
+      console.log(`[Telegram Bot] 'receive_telegram_message' tool called successfully.`);
+    } catch (error) {
+      console.error(`[Telegram Bot] Error calling 'receive_telegram_message' MCP tool:`, error);
+    }
+  } else {
+    console.log(`[Telegram Bot] Received non-text message, ignoring.`);
+  }
+});
+
+// Example command handler
+bot.start((ctx) => ctx.reply('Welcome to AI Swarm Gateway! Send me a message.'));
 
 // --- Set up Communication Transports ---
 
-// TCP communication with your phones
-const tcpPort = parseInt(process.env.TCP_PORT || '8080'); // Port for phone communication
+const tcpPort = parseInt(process.env.TCP_PORT || '8080');
 const netServerTransport = new NetServerTransport(tcpPort, mcpServer);
-await mcpServer.connect(netServerTransport); // <--- ADDED 'await' HERE
+await mcpServer.connect(netServerTransport);
 
-// --- Express.js for HTTP Webhook ---
+// --- Express HTTP Server for Telegram Webhook ---
+
 const app = express();
-app.use(express.json()); // Middleware to parse JSON request bodies
+app.use(express.json());
 
-// Render provides a PORT environment variable for HTTP traffic
 const httpPort = parseInt(process.env.PORT || '3000');
-const WEBHOOK_PATH = `/telegram-webhook`; // Consistent webhook path
+const WEBHOOK_PATH = `/telegram-webhook`;
 
-// Telegram webhook endpoint
 app.post(WEBHOOK_PATH, async (req, res) => {
-    // Telegraf's webhookCallback handles the update processing and sends a 200 OK
-    // This is crucial for Telegram to not retry
-    bot.webhookCallback(WEBHOOK_PATH)(req, res);
-
-    // After Telegraf handles it, we can extract the message and call our internal MCP tool
-    // We parse it ourselves as bot.webhookCallback doesn't return the processed update
-    const update = req.body;
-    if (update && update.message) {
-        const userId = update.message.from.id.toString();
-        const chatId = update.message.chat.id.toString();
-        const messageText = update.message.text || update.message.caption;
-
-        if (messageText) {
-            console.log(`[HTTP Webhook] Received Telegram message from chat ${chatId}: "${messageText}"`);
-            try {
-                // Call the MCP tool to process the incoming Telegram message
-                await mcpServer.callTool('receive_telegram_message', {
-                    chat_id: chatId,
-                    user_id: userId,
-                    text: messageText
-                });
-                console.log(`[HTTP Webhook] 'receive_telegram_message' tool called successfully.`);
-            } catch (error) {
-                console.error(`[HTTP Webhook] Error calling 'receive_telegram_message' MCP tool:`, error);
-                // Even if internal error, still send 200 OK to Telegram to avoid retries
-            }
-        } else {
-            console.log(`[HTTP Webhook] Received non-text message type, ignoring for now.`);
-        }
-    } else {
-        console.log(`[HTTP Webhook] Received Telegram update without message content.`);
-    }
+  // Await webhookCallback to ensure processing completes before response
+  await bot.webhookCallback(WEBHOOK_PATH)(req, res);
 });
 
-// Start the Express HTTP server
 app.listen(httpPort, () => {
-    console.log(`[HTTP Server] Listening for webhooks on port ${httpPort} at path ${WEBHOOK_PATH}`);
-    // Set the Telegram webhook to *this* server's public URL
-    const publicRenderUrl = process.env.RENDER_EXTERNAL_HOSTNAME ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://localhost:${httpPort}`;
-    const webhookUrl = `${publicRenderUrl}${WEBHOOK_PATH}`;
+  console.log(`[HTTP Server] Listening on port ${httpPort} at path ${WEBHOOK_PATH}`);
 
-    bot.telegram.setWebhook(webhookUrl).then(() => {
-        console.log(`[Telegram] Webhook set to ${webhookUrl}`);
-    }).catch(e => console.error("[Telegram] Error setting webhook:", e));
+  const publicRenderUrl = process.env.RENDER_EXTERNAL_HOSTNAME
+    ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}`
+    : `http://localhost:${httpPort}`;
+  const webhookUrl = `${publicRenderUrl}${WEBHOOK_PATH}`;
+
+  bot.telegram.setWebhook(webhookUrl)
+    .then(() => console.log(`[Telegram] Webhook set to ${webhookUrl}`))
+    .catch(e => console.error("[Telegram] Error setting webhook:", e));
 });
 
+// Graceful shutdown
 process.once('SIGINT', () => { bot.stop('SIGINT'); console.log('Shutting down...'); });
 process.once('SIGTERM', () => { bot.stop('SIGTERM'); console.log('Shutting down...'); });
 
-console.log(`[Server] AI Swarm Gateway server started. Listening for TCP connections on port ${tcpPort} and HTTP on ${httpPort}.`);
+console.log(`[Server] AI Swarm Gateway started. TCP port: ${tcpPort}, HTTP port: ${httpPort}.`);
