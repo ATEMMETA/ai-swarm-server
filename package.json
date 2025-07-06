@@ -9,10 +9,11 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.x",
     "zod": "^3.x",
-    "node-telegram-bot-api": "^0.61.0",
+    "telegraf": "^4.x",
     "dotenv": "^16.x",
     "@google/generative-ai": "^0.x",
-    "net": "^1.0.2"
+    "net": "^1.0.2",
+    "express": "^4.x"
   },
   "devDependencies": {
     "tsx": "^4.x"
