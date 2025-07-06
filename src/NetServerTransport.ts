@@ -1,5 +1,20 @@
-import { ServerTransport } from "@modelcontextprotocol/sdk/server/transport.js";
-import { Disposable, Logger } from "@modelcontextprotocol/sdk/common/logging.js";
+// Replace this line:
+// import { Disposable, Logger } from "@modelcontextprotocol/sdk/common/logging.js";
+
+// Try this instead:
+import { Disposable } from '@modelcontextprotocol/sdk/common/logging.js'; // Keep Disposable for the interface
+import { Logger } from '@modelcontextprotocol/sdk/common/logging.js'; // Confirming the path is correct based on SDK
+// Or, if Logger is a default export or needs specific import:
+// import Logger from '@modelcontextprotocol/sdk/common/logging.js';
+// Or, if it's from a higher level:
+// import { Logger } from '@modelcontextprotocol/sdk/dist/esm/common/logging.js'; // Still seems suspicious if not explicitly exported.
+
+// Let's assume the previous path was correct, but maybe `tsx` struggles with `.js` extensions in imports.
+// Try removing the .js:
+// import { Disposable, Logger } from "@modelcontextprotocol/sdk/common/logging"; // No .js
+// This usually works with `tsx` and TypeScript.
+
+
 import * as net from 'net';
 
 export class NetServerTransport implements ServerTransport {
