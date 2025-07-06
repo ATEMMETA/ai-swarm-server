@@ -1,3 +1,4 @@
+import * as net from 'net'; // <--- ADD THIS LINE at the top
 import { ServerTransport } from "@modelcontextprotocol/sdk/server/transport.js"; // This import is crucial for the interface
 // Remove or comment out: import { Disposable, Logger } from "@modelcontextprotocol/sdk/common/logging.js";
 // Also remove the direct import for Disposable, as it's not needed for your implementation.
