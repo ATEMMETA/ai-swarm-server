@@ -1,6 +1,6 @@
 import { ServerTransport } from "@modelcontextprotocol/sdk/server/transport.js";
 import { Disposable, Logger } from "@modelcontextprotocol/sdk/common/logging.js";
-import * as net from 'net'; // Node.js TCP module
+import * as net from 'net';
 
 export class NetServerTransport implements ServerTransport {
     private server: net.Server;
@@ -8,33 +8,22 @@ export class NetServerTransport implements ServerTransport {
     private logger = new Logger("NetServerTransport");
     private onMessageCallback: (message: any) => Promise<any> = async () => {};
     private onReadyCallback: () => void = () => {};
-    private mcpServerInstance: any; // Reference to the MCP server for calling tools
+    private mcpServerInstance: any;
 
     constructor(port: number, mcpServerInstance: any) {
-        this.mcpServerInstance = mcpServerInstance; // Store MCP server instance
+        this.mcpServerInstance = mcpServerInstance;
         this.server = net.createServer((socket) => {
             this.logger.info(`Phone client connected from ${socket.remoteAddress}:${socket.remotePort}`);
             this.clients.push(socket);
 
             socket.on('data', async (data) => {
-                const message = data.toString();
+                const message = data.toString().trim(); // Trim whitespace, especially newline
+                if (!message) return; // Ignore empty messages
                 this.logger.debug(`Received raw message from client: ${message}`);
                 try {
                     const parsedMessage = JSON.parse(message);
-                    // This is where the MCP transport needs to decide if it's an MCP message
-                    // or a custom message from the phone (like a tool call request for the Node.js agent).
-                    // For now, let's assume raw messages are directly processed or routed.
 
-                    // If the phone sends an MCP request, you'd integrate the MCP client part on the phone.
-                    // For our current flow, phones send specific tool requests (like "send_telegram_message").
-                    
-                    // You'll likely need to parse this message to see what the phone wants to do.
-                    // Example:
-                    if (parsedMessage.type === 'mcp_request') {
-                        // Forward to MCP server logic if phones are MCP clients
-                        // await this.onMessageCallback(parsedMessage.mcp_payload); // This would be MCP internal message
-                        // For now, we'll manually call tools based on phone's message type
-                    } else if (parsedMessage.type === 'tool_request') {
+                    if (parsedMessage.type === 'tool_request') {
                         // Assuming phone sends { type: 'tool_request', tool_id: 'send_telegram_message', args: { chat_id: '...', text: '...' } }
                         const { tool_id, args } = parsedMessage;
                         if (tool_id && args) {
@@ -48,8 +37,9 @@ export class NetServerTransport implements ServerTransport {
                             }
                         }
                     } else {
-                        // Handle other custom messages from phone
-                        this.logger.warn(`Unknown message type from phone:`, parsedMessage);
+                        // Handle other custom messages from phone (e.g., phone's status, capabilities)
+                        this.logger.warn(`Unknown or custom message type from phone:`, parsedMessage);
+                        // You could still trigger an MCP tool here if you define one for incoming phone data.
                     }
 
                 } catch (e) {
@@ -74,24 +64,20 @@ export class NetServerTransport implements ServerTransport {
         });
     }
 
-    // Methods required by ServerTransport interface (may not be fully utilized for this specific setup)
     async dispose(): Promise<void> {
         this.server.close();
         this.clients.forEach(c => c.destroy());
         this.logger.info("NetServerTransport disposed.");
     }
 
-    // This method is for when the MCP Server wants to send a message to a client
-    // For your setup, you might manually call socket.write() on a specific phone client.
+    // This MCP ServerTransport method might not be used if the phone is a custom TCP client
     async sendMessage(message: any): Promise<void> {
-        // Find the appropriate client to send the message to (e.g., based on a 'targetPhoneId' in message)
-        // For simplicity here, let's just log. In a real scenario, you'd have client management.
-        this.logger.warn("sendMessage not fully implemented for specific client targeting in NetServerTransport yet.");
-        // Example: If you have a registry of `phoneId -> socket`, you'd use that.
-        // this.clients[0]?.write(JSON.stringify(message) + '\n'); // send to first connected client
+        this.logger.warn("sendMessage (MCP Transport method) not implemented for custom TCP clients.");
+        // This method is for when the MCP server wants to send *MCP protocol messages* to its clients.
+        // For your setup, phones are custom TCP clients making tool requests, not full MCP clients yet.
+        // You'll use `sendToAllPhones` below to push data to phones.
     }
 
-    // This method is where the MCP Server registers its message handler
     onMessage(callback: (message: any) => Promise<any>): Disposable {
         this.onMessageCallback = callback;
         return { dispose: () => {} };
@@ -102,16 +88,30 @@ export class NetServerTransport implements ServerTransport {
         return { dispose: () => {} };
     }
 
-    // New method to allow the server to push data to specific phone clients
-    // This will be called by your `receive_telegram_message` MCP tool to forward to a phone.
-    sendToPhone(phoneId: string, data: any): void {
-        // You'll need a map of phoneId to socket to make this truly useful for a swarm.
-        // For now, sending to the first connected client:
+    // Custom method to send data to all connected phone clients
+    // This will be called by your `receive_telegram_message` MCP tool.
+    sendToAllPhones(data: any): void {
+        const messageToSend = JSON.stringify(data) + '\n';
         if (this.clients.length > 0) {
-            this.clients[0].write(JSON.stringify(data) + '\n');
-            this.logger.info(`Sent data to phone (first client): ${JSON.stringify(data)}`);
+            this.clients.forEach(client => {
+                client.write(messageToSend);
+            });
+            this.logger.info(`Sent message to ${this.clients.length} phone(s): ${JSON.stringify(data)}`);
         } else {
             this.logger.warn(`No phone clients connected to send data to.`);
         }
+    }
+
+    // Optional: If you later implement phone-specific routing
+    sendToPhone(phoneId: string, data: any): void {
+        // You'd need a map: Map<string, net.Socket> phoneIdToSocket;
+        // const targetSocket = this.phoneIdToSocket.get(phoneId);
+        // if (targetSocket) {
+        //     targetSocket.write(JSON.stringify(data) + '\n');
+        //     this.logger.info(`Sent data to phone ${phoneId}: ${JSON.stringify(data)}`);
+        // } else {
+        //     this.logger.warn(`Phone ${phoneId} not found or not connected.`);
+        // }
+        this.sendToAllPhones(data); // Fallback for now
     }
 }
