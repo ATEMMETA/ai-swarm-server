@@ -113,7 +113,7 @@ mcpServer.tool(
 // TCP communication with your phones
 const tcpPort = parseInt(process.env.TCP_PORT || '8080'); // Port for phone communication
 const netServerTransport = new NetServerTransport(tcpPort, mcpServer);
-mcpServer.connect(netServerTransport); // Connect MCP server to this transport
+await mcpServer.connect(netServerTransport); // <--- ADDED 'await' HERE
 
 // --- Express.js for HTTP Webhook ---
 const app = express();
