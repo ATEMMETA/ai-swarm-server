@@ -34,14 +34,14 @@ const geminiModel = genAI.getGenerativeModel({ model: "gemini-pro" });
 const activeChats = new Map<string, string>(); // Maps userId to chatId
 
 // --- Set up Communication Transports ---
-// Define tcpPort here because handleReceiveTelegramMessage (and NetServerTransport) need it.
 const tcpPort = parseInt(process.env.TCP_PORT || '8080');
-const netServerTransport = new NetServerTransport(tcpPort, mcpServer);
+const netServerTransport = new NetServerTransport(tcpPort, mcpServer); // Initialize NetServerTransport
 
-// --- Handler function for receiving Telegram messages ---
-// This function needs access to mcpServer.transport, which is set AFTER mcpServer.connect()
-// So, we'll ensure this code only executes once transport is connected.
-// Keep the function definition here, but its *invocation* will be after connect.
+// IMPORTANT: Connect MCP Server Transport *before* defining handlers that use it
+await mcpServer.connect(netServerTransport); // This sets mcpServer.transport
+
+// --- NOW Define Handler function for receiving Telegram messages ---
+// This function can now safely access mcpServer.transport
 const handleReceiveTelegramMessage = async ({
   chat_id,
   user_id,
@@ -62,9 +62,7 @@ const handleReceiveTelegramMessage = async ({
     text
   };
 
-  // This line caused the error when mcpServer.transport was undefined
-  // It will now be defined because the bot.on('message') handler (which calls this)
-  // runs *after* mcpServer.connect() completes.
+  // mcpServer.transport is guaranteed to be defined here now!
   (mcpServer.transport as NetServerTransport).sendToAllPhones(messageForPhone);
 
   return {
@@ -73,7 +71,8 @@ const handleReceiveTelegramMessage = async ({
 };
 
 // --- MCP Tools ---
-// 1. receive_telegram_message tool - defined here
+
+// 1. receive_telegram_message tool - NOW define it AFTER handleReceiveTelegramMessage
 mcpServer.tool(
   'receive_telegram_message',
   'Receive an incoming message from Telegram, forward to phones.',
@@ -82,10 +81,10 @@ mcpServer.tool(
     user_id: z.string().describe("Telegram user ID"),
     text: z.string().describe("Message text")
   },
-  handleReceiveTelegramMessage
+  handleReceiveTelegramMessage // This function is now fully defined and ready
 );
 
-// 2. send_telegram_message tool - your existing code
+// 2. send_telegram_message tool (no changes needed for this one's definition)
 mcpServer.tool(
   'send_telegram_message',
   'Send a message to a Telegram chat.',
@@ -105,7 +104,7 @@ mcpServer.tool(
   }
 );
 
-// 3. gemini_chat tool - your existing code
+// 3. gemini_chat tool (no changes needed for this one's definition)
 mcpServer.tool(
   'gemini_chat',
   'Engage Google Gemini for text generation.',
@@ -128,11 +127,8 @@ mcpServer.tool(
   }
 );
 
-// --- Connect MCP Server Transport (THIS MUST HAPPEN BEFORE ANY HANDLERS THAT USE IT) ---
-await mcpServer.connect(netServerTransport); // <--- ENSURE THIS COMPLETES FIRST
 
-// --- Telegram Bot Handlers ---
-// Move this block DOWN to after mcpServer.connect()
+// --- Telegram Bot Handlers (can now be defined/placed anywhere after handleReceiveTelegramMessage) ---
 bot.on('message', async (ctx) => {
   const userId = ctx.from?.id?.toString();
   const chatId = ctx.chat?.id?.toString();
