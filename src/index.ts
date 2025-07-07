@@ -141,8 +141,18 @@ mcpServer.tool(
 const tcpPort = parseInt(process.env.TCP_PORT || '8080');
 const netServerTransport = new NetServerTransport(tcpPort, mcpServer);
 
+// ... (your existing code up to await mcpServer.connect(netServerTransport);)
+
 // IMPORTANT: Connect MCP Server Transport *after* all tools are registered
 await mcpServer.connect(netServerTransport); // This sets mcpServer.transport
+
+// HACK: Explicitly assign the transport to the server if the SDK isn't doing it properly
+if (!mcpServer.transport) {
+    console.warn("[DEBUG HACK] mcpServer.transport was not set by connect, manually assigning.");
+    (mcpServer as any).transport = netServerTransport; // Force cast to any to bypass type errors
+}
+console.log(`[DEBUG] mcpServer.transport after connect and potential hack: ${!!mcpServer.transport}`);
+
 
 
 // --- Telegram Bot Handlers (can now be defined/placed anywhere) ---
