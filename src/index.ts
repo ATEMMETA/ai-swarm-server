@@ -31,10 +31,17 @@ const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const geminiModel = genAI.getGenerativeModel({ model: "gemini-pro" });
 
 // --- Global State for Chat ID Mapping ---
-// Consider persistent storage for production use
 const activeChats = new Map<string, string>(); // Maps userId to chatId
 
+// --- Set up Communication Transports ---
+// Define tcpPort here because handleReceiveTelegramMessage (and NetServerTransport) need it.
+const tcpPort = parseInt(process.env.TCP_PORT || '8080');
+const netServerTransport = new NetServerTransport(tcpPort, mcpServer);
+
 // --- Handler function for receiving Telegram messages ---
+// This function needs access to mcpServer.transport, which is set AFTER mcpServer.connect()
+// So, we'll ensure this code only executes once transport is connected.
+// Keep the function definition here, but its *invocation* will be after connect.
 const handleReceiveTelegramMessage = async ({
   chat_id,
   user_id,
@@ -46,15 +53,18 @@ const handleReceiveTelegramMessage = async ({
 }) => {
   console.log(`[MCP Tool: receive_telegram_message] Received from Telegram: Chat ID ${chat_id}, User ID ${user_id}, Text: "${text}"`);
 
-  activeChats.set(user_id, chat_id); // Store chat_id for later response
+  activeChats.set(user_id, chat_id);
 
   const messageForPhone = {
-    type: 'telegram_input', // Custom type for your phone's TCP listener
+    type: 'telegram_input',
     chat_id,
     user_id,
     text
   };
 
+  // This line caused the error when mcpServer.transport was undefined
+  // It will now be defined because the bot.on('message') handler (which calls this)
+  // runs *after* mcpServer.connect() completes.
   (mcpServer.transport as NetServerTransport).sendToAllPhones(messageForPhone);
 
   return {
@@ -63,8 +73,7 @@ const handleReceiveTelegramMessage = async ({
 };
 
 // --- MCP Tools ---
-
-// 1. receive_telegram_message tool
+// 1. receive_telegram_message tool - defined here
 mcpServer.tool(
   'receive_telegram_message',
   'Receive an incoming message from Telegram, forward to phones.',
@@ -76,7 +85,7 @@ mcpServer.tool(
   handleReceiveTelegramMessage
 );
 
-// 2. send_telegram_message tool
+// 2. send_telegram_message tool - your existing code
 mcpServer.tool(
   'send_telegram_message',
   'Send a message to a Telegram chat.',
@@ -96,7 +105,7 @@ mcpServer.tool(
   }
 );
 
-// 3. gemini_chat tool
+// 3. gemini_chat tool - your existing code
 mcpServer.tool(
   'gemini_chat',
   'Engage Google Gemini for text generation.',
@@ -119,8 +128,11 @@ mcpServer.tool(
   }
 );
 
-// --- Telegram Bot Handlers ---
+// --- Connect MCP Server Transport (THIS MUST HAPPEN BEFORE ANY HANDLERS THAT USE IT) ---
+await mcpServer.connect(netServerTransport); // <--- ENSURE THIS COMPLETES FIRST
 
+// --- Telegram Bot Handlers ---
+// Move this block DOWN to after mcpServer.connect()
 bot.on('message', async (ctx) => {
   const userId = ctx.from?.id?.toString();
   const chatId = ctx.chat?.id?.toString();
@@ -134,7 +146,6 @@ bot.on('message', async (ctx) => {
   if (messageText) {
     console.log(`[Telegram Bot] Received message from chat ${chatId}: "${messageText}"`);
     try {
-      // Directly call the handler function instead of going through mcpServer.callTool
       await handleReceiveTelegramMessage({
         chat_id: chatId,
         user_id: userId,
@@ -151,14 +162,8 @@ bot.on('message', async (ctx) => {
 
 bot.start((ctx) => ctx.reply('Welcome to AI Swarm Gateway! Send me a message.'));
 
-// --- Set up Communication Transports ---
-
-const tcpPort = parseInt(process.env.TCP_PORT || '8080');
-const netServerTransport = new NetServerTransport(tcpPort, mcpServer);
-await mcpServer.connect(netServerTransport);
 
 // --- Express HTTP Server for Telegram Webhook ---
-
 const app = express();
 app.use(express.json());
 
@@ -166,7 +171,6 @@ const httpPort = parseInt(process.env.PORT || '3000');
 const WEBHOOK_PATH = `/telegram-webhook`;
 
 app.post(WEBHOOK_PATH, async (req, res) => {
-  // Await webhookCallback to ensure processing completes before response
   await bot.webhookCallback(WEBHOOK_PATH)(req, res);
 });
 
